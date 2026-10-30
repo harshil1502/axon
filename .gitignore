@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+.env
+.env.*
+os/build/
+os/secrets/*
+!os/secrets/README.txt
+*.qcow2
+*.fd
+*.iso

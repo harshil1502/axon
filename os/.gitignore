@@ -1,0 +1,4 @@
+# throwaway VM build artifacts (base image, overlays, UEFI vars, serial log, seed)
+build/
+# baked secrets (Anthropic API key) — never commit
+secrets/

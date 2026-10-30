@@ -1,0 +1,193 @@
+#cloud-config
+# AxonOS provisioning — turns a stock Debian arm64 cloud image into a Linux
+# system whose agent-facing userland is the Axon daemon, with an interactive
+# console login and a one-command Claude Code launcher. See docs/BOOT.md.
+#
+# Axon's core is pure stdlib, so there is NO apt/pip/venv step for Axon itself:
+# we drop the source under /opt/axon and run it with the image's own python3.
+# (Claude Code needs Node.js; that install is deferred to `axon-claude`, on
+# demand, so first boot stays fast.)
+hostname: axonos
+manage_etc_hosts: true
+
+# Interactive login: autologin on the serial console + a root password fallback.
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  list: |
+    root:axon
+
+write_files:
+  # The Axon source, base64-injected by build-seed.sh (__AXON_B64__ placeholder).
+  - path: /opt/axon/axon-src.tar.gz
+    encoding: b64
+    permissions: '0644'
+    content: __AXON_B64__
+
+  # AxonOS identity.
+  - path: /etc/os-release
+    content: |
+      NAME="AxonOS"
+      PRETTY_NAME="AxonOS 0.2 (agent-native)"
+      ID=axonos
+      ID_LIKE=debian
+      VERSION="0.2"
+      VERSION_ID="0.2"
+      ANSI_COLOR="1;36"
+
+  # Login banner.
+  - path: /etc/motd
+    content: |
+
+      ╔═══════════════════════════════════════════════════════════════╗
+      ║   AxonOS 0.2 — an agent-native operating system                ║
+      ║   stock Linux kernel · the Axon daemon is first-class authority ║
+      ╠═══════════════════════════════════════════════════════════════╣
+      ║   axon actions            the typed capability catalogue        ║
+      ║   axon audit 10           who did what, attributable            ║
+      ║   systemctl status axon   the daemon, live                      ║
+      ║   axon-claude             install & launch Claude Code here     ║
+      ╚═══════════════════════════════════════════════════════════════╝
+
+  # Autologin root on the serial console (ttyAMA0) so `./boot.sh` lands you
+  # straight inside AxonOS with no password prompt.
+  - path: /etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin root --keep-baud 115200,38400,9600 %I $TERM
+
+  # The Axon daemon as a first-class systemd service ("PID-adjacent").
+  - path: /etc/systemd/system/axon.service
+    content: |
+      [Unit]
+      Description=Axon agent-native OS daemon
+      Documentation=file:///opt/axon/docs/ARCHITECTURE.md
+      After=multi-user.target
+
+      [Service]
+      Type=simple
+      User=axon
+      Group=axon
+      Environment=HOME=/var/lib/axon
+      Environment=PYTHONPATH=/opt/axon
+      WorkingDirectory=/opt/axon
+      ExecStart=/usr/bin/python3 -c "from axon import boot; from axon.daemon import Daemon; Daemon(boot()).serve_forever()"
+      Restart=on-failure
+      RestartSec=2
+      NoNewPrivileges=yes
+      PrivateTmp=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # `axon` CLI wrapper against the stock interpreter + extracted source.
+  - path: /usr/local/bin/axon
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      PYTHONPATH=/opt/axon exec /usr/bin/python3 -m axon.cli "$@"
+
+  # Idempotent Node.js + Claude Code installer, lock-guarded so the boot-time
+  # background install and an on-demand `axon-claude` never collide.
+  - path: /usr/local/bin/axon-install-claude
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      set -e
+      command -v claude >/dev/null 2>&1 && exit 0
+      echo "[AxonOS] installing Node.js + Claude Code (needs network)…"
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y nodejs npm
+      npm install -g @anthropic-ai/claude-code
+
+  # Launch Claude Code from inside AxonOS. Ensures it is installed (waiting on the
+  # boot-time install if that is still running), then execs it. Axon is exposed to
+  # the session as capability-gated MCP tools via /root/.mcp.json.
+  - path: /usr/local/bin/axon-claude
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      set -e
+      flock /tmp/claude-install.lock /usr/local/bin/axon-install-claude
+      if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "[AxonOS] No ANTHROPIC_API_KEY set. To authenticate a session:"
+        echo "   export ANTHROPIC_API_KEY=sk-ant-...   (reliable, headless)"
+        echo "   or use /login inside claude           (browser OAuth; callback finicky in a VM)"
+      fi
+      echo "[AxonOS] launching Claude Code — Axon is exposed as MCP tools (server: axon)."
+      exec claude "$@"
+
+  # ANTHROPIC_API_KEY for the login shell. build-seed.sh substitutes the real key
+  # here if ANTHROPIC_API_KEY (or os/secrets/anthropic.key) is present at build.
+  - path: /etc/profile.d/axon-anthropic.sh
+    permissions: '0600'
+    content: |
+      __ANTHROPIC_ENV__
+
+  # Register the Axon MCP server so Claude Code (launched from /root) drives the
+  # machine through typed, capability-gated Axon tools instead of a raw shell.
+  - path: /root/.mcp.json
+    content: |
+      {
+        "mcpServers": {
+          "axon": {
+            "command": "/usr/bin/python3",
+            "args": ["-m", "axon.mcp_server"],
+            "env": {
+              "PYTHONPATH": "/opt/axon",
+              "AXON_SOCK": "/var/lib/axon/.axon/axon.sock",
+              "AXON_MCP_GRANTS": "fs.* mem.* sys.info proc.list proc.info proc.tree fs.search",
+              "AXON_MCP_SCOPE": "/root /tmp"
+            }
+          }
+        }
+      }
+
+  # Boot-time proof: exercise the daemon over its Unix socket and print to the
+  # console, so a headless boot proves Axon is actually running on Linux.
+  - path: /opt/axon/verify.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      export HOME=/var/lib/axon PYTHONPATH=/opt/axon
+      echo
+      echo "==================== AXONOS READY ===================="
+      printf 'axon.service : '; systemctl is-active axon.service
+      echo "kernel       : $(uname -sr)"
+      echo "arch         : $(uname -m)"
+      echo "--- action catalogue over the daemon's Unix socket (real Linux) ---"
+      /usr/bin/python3 - <<'PY'
+      from axon.client import Client
+      acts = Client().call("actions")
+      print(len(acts), "actions:", ", ".join(a["name"] for a in acts))
+      PY
+      echo "--- a capability-gated call, end to end ---"
+      /usr/bin/python3 - <<'PY'
+      from axon.client import Client
+      c = Client()
+      tok = c.call("grant", agent="init", grants=["sys.info"])
+      info = c.call("invoke", token=tok, action="sys.info", args={})
+      print("sys.info ->", info.get("system"), info.get("release"), info.get("machine"))
+      PY
+      echo "======================================================"
+      echo
+
+runcmd:
+  - [ mkdir, -p, /opt/axon ]
+  - [ tar, xzf, /opt/axon/axon-src.tar.gz, -C, /opt/axon ]
+  - [ useradd, --system, --home-dir, /var/lib/axon, --create-home, --shell, /usr/sbin/nologin, axon ]
+  - [ install, -d, -o, axon, -g, axon, /var/lib/axon ]
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, --now, axon.service ]
+  - [ sh, -c, "sleep 3" ]
+  - [ sh, -c, "/opt/axon/verify.sh > /dev/console 2>&1 || true" ]
+  # Apply the console autologin on THIS boot (getty already started before the
+  # drop-in was written) so the user lands in a shell immediately.
+  - [ systemctl, restart, "serial-getty@ttyAMA0.service" ]
+  # Pre-install Node.js + Claude Code in the background (lock-guarded) so it is
+  # ready without blocking login; `axon-claude` waits on the same lock if needed.
+  - [ sh, -c, "flock -n /tmp/claude-install.lock /usr/local/bin/axon-install-claude >/var/log/claude-install.log 2>&1 &" ]
+
+final_message: "AxonOS booted in $UPTIME s — the Axon daemon is a first-class Linux service. Console: autologin root."

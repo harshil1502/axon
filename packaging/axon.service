@@ -1,0 +1,49 @@
+# Axon daemon — the agent-native authority layer as a systemd service.
+#
+# "PID-adjacent," not PID 1: this is a normal system service, but ordered early
+# and treated as the first-class authority every agent action routes through.
+# See docs/BOOT.md. Install to /etc/systemd/system/axon.service, then:
+#   sudo useradd --system --home /var/lib/axon --shell /usr/sbin/nologin axon
+#   sudo install -d -o axon -g axon /var/lib/axon
+#   sudo systemctl daemon-reload && sudo systemctl enable --now axon.service
+#   systemctl status axon
+#
+# ExecStart uses an explicit one-liner because boot() currently wires only the
+# filesystem/system actions and there is no `axon-daemon` console entrypoint yet
+# (integration adds one; then this becomes `ExecStart=/opt/axon/venv/bin/axon-daemon`).
+
+[Unit]
+Description=Axon agent-native OS daemon
+Documentation=file:///opt/axon/docs/ARCHITECTURE.md file:///opt/axon/docs/BOOT.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=axon
+Group=axon
+
+# Durable, access-controlled state: signing key, audit log, snapshots, memory.
+# The kernel derives its state dir from Path.home()/.axon, so HOME is what steers
+# it (there is no AXON_HOME hook in the code yet); state lands in /var/lib/axon/.axon.
+Environment=HOME=/var/lib/axon
+WorkingDirectory=/opt/axon
+
+# Bring the kernel up with its built-in actions and serve the Unix socket.
+ExecStart=/opt/axon/venv/bin/python -c "from axon import boot; from axon.daemon import Daemon; Daemon(boot()).serve_forever()"
+
+Restart=on-failure
+RestartSec=2
+
+# Conservative hardening. Intentionally NOT airtight — some Axon actions need
+# broad reach by design, and docs/BOOT.md is explicit that a real syscall-level
+# sandbox is deferred, named work rather than something this unit pretends to do.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+StateDirectory=axon
+RuntimeDirectory=axon
+
+[Install]
+WantedBy=multi-user.target

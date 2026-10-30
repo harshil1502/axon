@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# AxonOS — the Axon daemon as an OpenRC service (Alpine/musl path).
+# The Debian/systemd route (os/cloud-init + packaging/axon.service) is the
+# lower-surprise v1; this is the equivalent for an Alpine-based build.
+#   install -m755 axond /etc/init.d/axond && rc-update add axond default && rc-service axond start
+
+name="axon"
+description="Axon agent-native OS daemon"
+command="/usr/bin/python3"
+command_args="-c \"from axon import boot; from axon.daemon import Daemon; Daemon(boot()).serve_forever()\""
+command_background=true
+command_user="axon:axon"
+pidfile="/run/axond.pid"
+export HOME="/var/lib/axon"
+export PYTHONPATH="/opt/axon"
+
+depend() {
+    need localmount
+    after bootmisc
+}
+
+start_pre() {
+    checkpath -d -o axon:axon /var/lib/axon
+}

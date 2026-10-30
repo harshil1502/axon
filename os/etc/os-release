@@ -1,0 +1,11 @@
+NAME="AxonOS"
+PRETTY_NAME="AxonOS 0.2 (agent-native)"
+ID=axonos
+ID_LIKE=debian
+VERSION="0.2"
+VERSION_ID="0.2"
+HOME_URL="file:///opt/axon/docs/ARCHITECTURE.md"
+ANSI_COLOR="1;36"
+# AxonOS is a stock Linux kernel with an agent-first userland: the Axon daemon
+# is the first-class authority every agent action routes through. The kernel is
+# not forked — we adopt the proven engine and own the userland (see docs/BOOT.md).

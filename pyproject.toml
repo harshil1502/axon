@@ -1,0 +1,19 @@
+[project]
+name = "axon"
+version = "0.2.0"
+description = "An agent-native OS layer — registry, capabilities, policy, reversibility, memory, runtime, and a Claude agent loop."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+agent = ["anthropic>=0.40"]
+
+[project.scripts]
+axon = "axon.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["axon", "axon.actions"]
